@@ -57,12 +57,32 @@ app = FastAPI(
 )
 
 
-@app.middleware("http")
-async def add_process_time_header(request: Request, call_next):
-    started = time.perf_counter()
-    response = await call_next(request)
-    response.headers["X-Process-Time-Ms"] = f"{(time.perf_counter() - started) * 1000:.1f}"
-    return response
+class ProcessTimeMiddleware:
+    """Adds an X-Process-Time-Ms header with server-side handling time.
+
+    Written as plain ASGI middleware: Starlette's @app.middleware("http") wraps every
+    request in extra tasks and streams, which is noticeable on small CPU allocations.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        started = time.perf_counter()
+
+        async def send_with_timing(message):
+            if message["type"] == "http.response.start":
+                elapsed = f"{(time.perf_counter() - started) * 1000:.1f}".encode()
+                message["headers"] = [*message.get("headers", []), (b"x-process-time-ms", elapsed)]
+            await send(message)
+
+        await self.app(scope, receive, send_with_timing)
+
+
+app.add_middleware(ProcessTimeMiddleware)
 
 
 @app.exception_handler(Exception)
@@ -81,7 +101,7 @@ async def health() -> HealthResponse:
     status_code=status.HTTP_202_ACCEPTED,
     response_model=WebhookAck,
 )
-async def receive_transaction_webhook(payload: TransactionWebhook, request: Request) -> WebhookAck:
+async def receive_transaction_webhook(payload: TransactionWebhook, request: Request) -> JSONResponse:
     # Persist first so the transaction survives a crash, then hand off to the
     # background processor. The response never waits for processing.
     is_new = await db.insert_if_new(request.app.state.pool, payload)
@@ -89,10 +109,15 @@ async def receive_transaction_webhook(payload: TransactionWebhook, request: Requ
         request.app.state.processor.submit(payload.transaction_id)
     else:
         logger.info("duplicate webhook ignored for %s", payload.transaction_id)
-    return WebhookAck(
-        message="Webhook accepted",
-        transaction_id=payload.transaction_id,
-        duplicate=not is_new,
+    # Returned as a ready-made response (shape documented by WebhookAck) to skip
+    # response-model validation on the hot path.
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "message": "Webhook accepted",
+            "transaction_id": payload.transaction_id,
+            "duplicate": not is_new,
+        },
     )
 
 

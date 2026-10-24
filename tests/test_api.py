@@ -46,7 +46,12 @@ async def test_webhook_accepted_quickly_then_processed(client):
     elapsed = time.perf_counter() - started
 
     assert resp.status_code == 202
-    assert resp.json()["duplicate"] is False
+    assert resp.json() == {
+        "message": "Webhook accepted",
+        "transaction_id": payload["transaction_id"],
+        "duplicate": False,
+    }
+    assert float(resp.headers["x-process-time-ms"]) < 500
     assert elapsed < 0.5
 
     resp = await client.get(f"/v1/transactions/{payload['transaction_id']}")

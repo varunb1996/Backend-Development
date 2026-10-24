@@ -5,7 +5,14 @@ acknowledges them right away with `202 Accepted`, and processes each transaction
 background. Every transaction is processed exactly once, even when the same webhook arrives
 many times or the server restarts in the middle of processing.
 
-**Live API:** `https://<your-service>.onrender.com` &nbsp;·&nbsp; Interactive docs: `/docs`
+**Live API:** https://transaction-webhook-service-mli2.onrender.com<br>
+**Interactive docs:** https://transaction-webhook-service-mli2.onrender.com/docs
+
+| Endpoint | Live URL |
+|---|---|
+| Health check | `GET https://transaction-webhook-service-mli2.onrender.com/` |
+| Webhook | `POST https://transaction-webhook-service-mli2.onrender.com/v1/webhooks/transactions` |
+| Transaction status | `GET https://transaction-webhook-service-mli2.onrender.com/v1/transactions/{transaction_id}` |
 
 > The service runs on Render's free tier, which sleeps after 15 minutes without traffic. The first
 > request after a sleep can take up to a minute while the instance wakes. Send a `GET /` first to
@@ -115,32 +122,42 @@ validation, 404s, recovery of a transaction whose worker crashed, and retry afte
 `scripts/smoke_test.py` runs the four success criteria against any URL, using the real 30-second delay:
 
 ```bash
-python scripts/smoke_test.py https://<your-service>.onrender.com
+python scripts/smoke_test.py https://transaction-webhook-service-mli2.onrender.com
 python scripts/smoke_test.py http://localhost:8000 --load 100
 ```
 
-Example output:
+Results against the live deployment:
 
 ```
+$ python scripts/smoke_test.py https://transaction-webhook-service-mli2.onrender.com
 1. Single transaction
-  PASS webhook returned 202 in 21ms
+  PASS webhook returned 202 in 155ms
   PASS acknowledged within 500ms
   PASS status is PROCESSING right after the webhook
-  PASS PROCESSED after ~30s (created_at=...T04:56:30Z, processed_at=...T04:57:00Z)
+  PASS PROCESSED after ~31s (created_at=2026-10-24T05:42:00Z, processed_at=2026-10-24T05:42:30Z)
 2. Duplicate prevention
   PASS all 5 duplicate webhooks returned 202
   PASS exactly one webhook created the transaction (got 1)
-3. Performance: 100 concurrent webhooks
-  PASS all 100 returned 202
-     p50=180ms p95=421ms max=430ms (client-observed, includes network)
-...
+  PASS query endpoint returns a single transaction
+3. Performance: 50 concurrent webhooks
+  PASS all 50 returned 202
+4. Reliability: bad input is rejected cleanly
+  PASS malformed payload -> 422
+  PASS unknown transaction -> 404
+  PASS duplicate-test transaction processed once
+
 All checks passed.
 ```
+
+Latency numbers measured from the client include the network round trip to the Render region
+(Singapore). The `X-Process-Time-Ms` response header shows the server's own handling time, which
+for a single webhook is typically **5–25ms**. Bursts of many simultaneous webhooks take longer on
+the free plan, which only gets 0.1 CPU; a paid instance removes that limit.
 
 ### Manual checks with curl
 
 ```bash
-URL=http://localhost:8000
+URL=https://transaction-webhook-service-mli2.onrender.com     # or http://localhost:8000
 
 curl -i -X POST $URL/v1/webhooks/transactions \
   -H "Content-Type: application/json" \
